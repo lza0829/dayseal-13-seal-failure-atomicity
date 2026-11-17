@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sqlite3
 from app.db import connect
 
 
@@ -35,6 +36,16 @@ CREATE TABLE IF NOT EXISTS close_batches (
   sealed_at TEXT NOT NULL,
   note TEXT
 );
+CREATE TABLE IF NOT EXISTS close_snapshots (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER NOT NULL UNIQUE,
+  business_day TEXT NOT NULL,
+  line_count INTEGER NOT NULL,
+  system_total REAL NOT NULL,
+  lines_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (batch_id) REFERENCES close_batches(id)
+);
 CREATE TABLE IF NOT EXISTS variance_rows (
   id INTEGER PRIMARY KEY,
   batch_id INTEGER NOT NULL,
@@ -43,6 +54,14 @@ CREATE TABLE IF NOT EXISTS variance_rows (
   disposition TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS close_day_locks (
+  business_day TEXT PRIMARY KEY,
+  batch_id INTEGER NOT NULL,
+  locked_at TEXT NOT NULL,
+  FOREIGN KEY (batch_id) REFERENCES close_batches(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_variance_rows_batch
+  ON variance_rows(batch_id);
 CREATE TABLE IF NOT EXISTS variance_holds (
   id INTEGER PRIMARY KEY,
   business_day TEXT NOT NULL,
@@ -55,11 +74,37 @@ CREATE TABLE IF NOT EXISTS reopen_requests (
 );
 '''
 
+# Created separately: a legacy database may already hold duplicate sealed
+# batches for one day, so index creation is best-effort (the service-level
+# check remains authoritative either way).
+SEALED_DAY_INDEX = '''
+CREATE UNIQUE INDEX IF NOT EXISTS ux_close_batches_sealed_day
+  ON close_batches(business_day) WHERE status='sealed';
+'''
+
+# Databases sealed before day locks existed have sealed batches but no lock.
+# Backfill one lock per sealed day (newest batch wins) so those days stay
+# closed and keep rejecting line writes after the upgrade.
+BACKFILL_DAY_LOCKS = '''
+INSERT INTO close_day_locks(business_day, batch_id, locked_at)
+SELECT b.business_day, b.id, b.sealed_at
+  FROM close_batches b
+ WHERE b.status='sealed'
+   AND b.id = (SELECT MAX(b2.id) FROM close_batches b2
+                WHERE b2.business_day=b.business_day AND b2.status='sealed')
+   AND NOT EXISTS (SELECT 1 FROM close_day_locks l WHERE l.business_day=b.business_day)
+'''
+
 
 def seed_if_empty() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        conn.execute(BACKFILL_DAY_LOCKS)
+        try:
+            conn.execute(SEALED_DAY_INDEX)
+        except sqlite3.IntegrityError:
+            pass
         n = conn.execute("SELECT COUNT(*) c FROM tills").fetchone()["c"]
         if n:
             return

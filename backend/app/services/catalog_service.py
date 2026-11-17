@@ -19,7 +19,9 @@ def dashboard() -> dict[str, Any]:
             "line_count_today": count,
             "system_total_today": total,
             "sealed_today": sealed,
-            "close_batch_count": conn.execute("SELECT COUNT(*) c FROM close_batches").fetchone()["c"],
+            # Only fully sealed batches are counted: a rolled-back seal must
+            # leave this number untouched.
+            "close_batch_count": close_repo.sealed_batch_count(conn),
             "open_variance_count": conn.execute(
                 "SELECT COUNT(*) c FROM variance_rows WHERE disposition='pending'"
             ).fetchone()["c"],

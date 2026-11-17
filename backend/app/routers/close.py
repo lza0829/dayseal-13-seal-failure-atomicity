@@ -22,3 +22,8 @@ def batches():
 @router.get("/variances")
 def variances():
     return svc.list_variances()
+
+
+@router.get("/integrity")
+def integrity():
+    return svc.integrity()

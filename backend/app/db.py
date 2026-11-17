@@ -5,9 +5,12 @@ from app.config import DATA_DIR, DB_PATH
 
 def connect(*, immediate: bool = False) -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, isolation_level=None if not immediate else "EXCLUSIVE")
+    # isolation_level=None: sqlite3 must not open implicit transactions;
+    # every write path owns its BEGIN/COMMIT/ROLLBACK explicitly.
+    conn = sqlite3.connect(DB_PATH, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     if immediate:
         conn.execute("BEGIN IMMEDIATE")
     return conn
